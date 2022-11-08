@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <time.h>
@@ -15,21 +16,27 @@
 #define BACKLOG 10
 #define MAX_CONNECTED_NO 10
 #define MAXDATASIZE (5 * 1024)
-struct sockaddr_in   client_info[MAX_CONNECTED_NO]   ;
+struct sockaddr_in   client_info[MAX_CONNECTED_NO];
+int client_num2fd[MAX_CONNECTED_NO];
+int client_valid[MAX_CONNECTED_NO];
 int client_num;
-int is_message;
-int sent_no;
-char message[5000];
+
 struct arg_struct {
     int connect_fd;
     int arg2;
+    int num;
+};
+
+struct node {
+  int no;
+  struct sockaddr_in sockaddr;
 };
 
 void handle_one_client(void *arg_struct) {
   int connect_fd = ((struct arg_struct*)arg_struct)->connect_fd;
+  int num = ((struct arg_struct*)arg_struct)->num;
   struct sockaddr_in connected_addr;
   int sin_size, recvbytes, sendbytes;
-  char buf[MAXDATASIZE];
   int i=0;
   struct sockaddr_in peer_addr;
   int len = sizeof(peer_addr);
@@ -47,74 +54,91 @@ void handle_one_client(void *arg_struct) {
          inet_ntop(AF_INET, &peer_addr.sin_addr, peer_ip_addr,
                    sizeof(peer_ip_addr)),
          ntohs(peer_addr.sin_port));
-    while(1)
-    {
-        int quit=0;
-        sleep(3);
-        if ((recvbytes = recv(connect_fd, buf, MAXDATASIZE, 0)) == -1) {
-            perror("recv:");
-            exit(1);
-        }
-        printf("Recv bytes: %d, buf: %s\n",recvbytes, buf);
-        int option=*buf-'0';
-        switch (option)
-        {
-        case 3:
-            time_t host_time;
-            struct timeval ti;
-            gettimeofday(&ti, NULL);
-            host_time=ti.tv_sec;
-            time_t * p_t=(time_t*)(buf+9);
-            *p_t=host_time;
-            if ((sendbytes = send(connect_fd, buf, sizeof(buf), 0)) == -1) {
+    while(1) {
+      char buf[MAXDATASIZE] = {};
+      int quit=0;
+      // sleep(3);
+      if ((recvbytes = recv(connect_fd, buf, MAXDATASIZE, 0)) == -1) {
+          perror("recv:");
+          exit(1);
+      }
+      int option=*buf-'0';
+      switch (option)
+      {
+      case 2:
+          client_valid[num] = 0;
+          quit=1;
+          break;
+      case 3:
+          time_t host_time;
+          struct timeval ti;
+          gettimeofday(&ti, NULL);
+          host_time=ti.tv_sec;
+          time_t * p_t=(time_t*)(buf+9);
+          *p_t=host_time;
+          if ((sendbytes = send(connect_fd, buf, sizeof(buf), 0)) == -1) {
+              perror("send:");
+              exit(1);
+          }
+          printf("Send bytes: %d \n", sendbytes);
+          break;
+      case 4:
+          gethostname(buf+9,4000);
+          if ((sendbytes = send(connect_fd, buf, sizeof(buf), 0)) == -1) {
+              perror("send:");
+              exit(1);
+          }
+          printf("Send bytes: %d \n", sendbytes);
+          break;
+      case 5:
+          int* t5_p=(int*)(buf+9);
+          struct node * client_p=(struct node*)(buf+13);
+          int j;
+          for(i=0,j=0;i<client_num;i++,j++)
+          {
+            if(client_valid[i]==0) {
+              j--;
+              continue;
+            }
+            client_p[j].no=i;
+            client_p[j].sockaddr =client_info[i] ;
+          }
+          *t5_p=j;
+          if ((sendbytes = send(connect_fd, buf, sizeof(buf), 0)) == -1) {
+              perror("send:");
+              exit(1);
+          }
+          printf("Send bytes: %d \n", sendbytes);
+          break;
+      case 6:
+          int failed=0;
+          int sent_no=*((int*)(buf+1));
+          char message[MAXDATASIZE] = {};
+          strcpy(message+5,buf+9);
+          message[0] = '8';
+          *(int*)(message+1) = num;
+          if(client_valid[sent_no] == 1 && sent_no != num) {
+            if ((sendbytes = send(client_num2fd[sent_no], message, sizeof(message), 0)) == -1) {
                 perror("send:");
                 exit(1);
             }
             printf("Send bytes: %d \n", sendbytes);
-            break;
-        case 4:
-            gethostname(buf+9,4000);
-            if ((sendbytes = send(connect_fd, buf, sizeof(buf), 0)) == -1) {
-                perror("send:");
-                exit(1);
-            }
-            printf("Send bytes: %d \n", sendbytes);
-            break;
-        case 5:
-            int* t5_p=(int*)(buf+9);
-            *t5_p=client_num;
-            struct sockaddr_in * client_p=(struct sockaddr_in*)(buf+13);
-            for(i=0;i<client_num;i++)
-            {
-                client_p[i]=client_info[i] ;
-            }
-            if ((sendbytes = send(connect_fd, buf, sizeof(buf), 0)) == -1) {
-                perror("send:");
-                exit(1);
-            }
-            printf("Send bytes: %d \n", sendbytes);
-            break;
-        case 6:
-            is_message=1;
-            sent_no=*((int*)(buf+1));
-            strcpy(message,buf+9);
-            sleep(10);
-            if(is_message==0)  *((int*)(buf+1))=1;
-            else   *((int*)(buf+9))=0;
-            if ((sendbytes = send(connect_fd, buf, sizeof(buf), 0)) == -1) {
-                perror("send:");
-                exit(1);
-            }
-            printf("Send bytes: %d \n", sendbytes);
-            break;
-        case 7:
-        case 2:
-            quit=1;
-            break;
-        default:
-            break;
-        }
-        if(quit) break;
+          }else {
+            failed = 1;
+          }
+          if(failed==0) *((int*)(buf+9))=1;
+          else *((int*)(buf+9))=0;
+          if ((sendbytes = send(connect_fd, buf, sizeof(buf), 0)) == -1) {
+              perror("send:");
+              exit(1);
+          }
+          printf("Send bytes: %d \n", sendbytes);
+          break;
+      case 7:
+      default:
+          break;
+      }
+      if(quit) break;
     }
   close(connect_fd);
   return;
@@ -183,13 +207,16 @@ int main() {
     pthread_t thread_id;
     if(client_num>MAX_CONNECTED_NO) break;
     client_info[client_num]=connected_addr;
-    client_num++;
+    client_num2fd[client_num] = connect_fd;
+    client_valid[client_num] = 1;
     struct arg_struct args;
     args.connect_fd = connect_fd;
+    args.num = client_num;
+    client_num++;
     pthread_create(&thread_id, NULL, (void*)&handle_one_client, (void*)(&args));
     thread_idx++;
     thread_ids[thread_idx] = thread_id;
-    if (thread_idx >= 1) {
+    if (thread_idx >= MAX_CONNECTED_NO) {
       break;
     }
   }
